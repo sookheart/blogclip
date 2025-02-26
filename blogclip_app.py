@@ -50,7 +50,7 @@ def generate_video_script(text, script_length=1000, model="gpt-4-turbo-preview")
     각 페이지별로 고객 대상으로 친절한 어투로 자세한 설명을 제공해 주세요.
     
     문서 내용:
-    {text[:4000]}
+    {text}
     """
     try:
         # API 키 가져오기
