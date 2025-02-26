@@ -34,10 +34,17 @@ def extract_text_from_pdf(uploaded_file):
         st.error(f"PDF 읽기 오류: {e}")
         return ""
 
-def generate_video_script(text, num_pages=3, script_length=1000, model="gpt-4-turbo-preview"):
+def generate_video_script(text, num_pages=3, total_script_length=1000, model="gpt-4-turbo-preview"):
     """GPT를 활용하여 블로그 제작을 위한 스크립트 생성"""
     if not text:
         return "스크립트를 생성할 내용이 없습니다."
+    
+    # 텍스트 길이 제한 (토큰 제한 고려)
+    max_text_length = 3000  # 안전한 값으로 설정
+    limited_text = text[:max_text_length]
+    
+    # 페이지당 스크립트 길이 계산
+    per_page_length = total_script_length // num_pages
     
     prompt = f"""
     다음 문서의 내용을 바탕으로 블로그를 제작하기 위한 스크립트를 작성해 주세요.
@@ -50,11 +57,13 @@ def generate_video_script(text, num_pages=3, script_length=1000, model="gpt-4-tu
     [상세 설명 스크립트]
     
     각 페이지는 서로 다른 주제나 측면을 다루되 전체적으로 논리적인 흐름을 가지도록 해주세요.
-    각 페이지의 내용은 약 {script_length//num_pages}자 내외로 작성하여 전체 스크립트가 약 {script_length}자가 되도록 해주세요.
+    각 페이지의 내용은 약 {per_page_length}자 내외로 작성하여 전체 스크립트가 약 {total_script_length}자가 되도록 해주세요.
     각 페이지별로 고객 대상으로 친절한 어투로 자세한 설명을 제공해 주세요.
     
+    반드시 {num_pages}개의 페이지를 생성해 주세요.
+    
     문서 내용:
-    {text}
+    {limited_text}
     """
     try:
         # API 키 가져오기
@@ -74,7 +83,7 @@ def generate_video_script(text, num_pages=3, script_length=1000, model="gpt-4-tu
         st.error(f"스크립트 생성 오류: {e}")
         return "블로그 스크립트 생성 실패"
 
-def parse_script_pages(script):
+def parse_script_pages(script, expected_page_count=3):
     """스크립트에서 페이지 제목과 내용을 추출하여 구조화"""
     # 정규식 패턴: '# 페이지 제목: ' 또는 '# ' 등으로 시작하는 제목 찾기
     title_patterns = [
@@ -136,12 +145,49 @@ def parse_script_pages(script):
                     'content': content
                 })
     
-    # 페이지 찾기에 실패한 경우, 전체 텍스트를 하나의 페이지로 처리
-    if not pages:
-        pages.append({
-            'title': '생성된 블로그 콘텐츠',
-            'content': script.strip()
-        })
+    # 페이지 찾기에 실패하거나 예상 페이지 수와 다를 경우 보정
+    if not pages or len(pages) != expected_page_count:
+        st.warning(f"페이지 파싱 문제: {len(pages)}개 페이지가 추출되었지만, {expected_page_count}개가 필요합니다. 보정을 시도합니다.")
+        
+        # 페이지가 없거나 너무 적은 경우: 전체 콘텐츠를 강제로 나눔
+        if len(pages) < expected_page_count:
+            # 기존 페이지 유지
+            existing_pages = pages.copy()
+            pages = []
+            
+            # 실제 페이지 수가 0이면 전체 스크립트를 사용
+            if len(existing_pages) == 0:
+                # 스크립트를 대략적으로 나누기
+                parts = []
+                script_lines = script.split('\n')
+                chunk_size = len(script_lines) // expected_page_count
+                
+                for i in range(expected_page_count):
+                    start = i * chunk_size
+                    end = start + chunk_size if i < expected_page_count - 1 else len(script_lines)
+                    parts.append('\n'.join(script_lines[start:end]))
+                
+                # 나눈 부분으로 페이지 생성
+                for i, part in enumerate(parts):
+                    pages.append({
+                        'title': f'페이지 {i+1}',
+                        'content': part.strip()
+                    })
+            else:
+                # 기존 페이지 먼저 추가
+                pages = existing_pages
+                
+                # 추가 페이지 필요
+                remaining = expected_page_count - len(pages)
+                for i in range(remaining):
+                    pages.append({
+                        'title': f'추가 페이지 {i+1}',
+                        'content': f'이 콘텐츠는 {expected_page_count}개 페이지 요구사항을 충족하기 위해 자동 생성되었습니다.'
+                    })
+        
+        # 페이지가 너무 많은 경우: 초과 페이지 제거
+        elif len(pages) > expected_page_count:
+            pages = pages[:expected_page_count]
     
     return pages
 
@@ -149,6 +195,9 @@ def generate_image_prompt_for_page(page, model="gpt-4-turbo-preview"):
     """페이지 내용에 맞는 이미지 생성 프롬프트 생성"""
     if not page or not page.get('content'):
         return "페이지 내용을 바탕으로 한 실사 이미지"
+    
+    # 콘텐츠 길이 제한
+    content_preview = page['content'][:1500]  # 콘텐츠 길이 제한
     
     prompt = f"""
     아래 블로그 페이지의 내용을 분석하여,
@@ -166,7 +215,7 @@ def generate_image_prompt_for_page(page, model="gpt-4-turbo-preview"):
     페이지 제목: {page['title']}
     
     페이지 내용:
-    {page['content']}
+    {content_preview}
     """
     try:
         # API 키 가져오기
@@ -223,7 +272,28 @@ def generate_image_for_page(page, image_style="실사 스타일"):
             'url': response.data[0].url
         }
     except Exception as e:
-        st.error(f"이미지 생성 오류: {str(e)}")
+        error_msg = str(e)
+        st.error(f"이미지 생성 오류: {error_msg}")
+        
+        # 만약 프롬프트 길이 문제라면
+        if "maximum context length" in error_msg.lower() or "too long" in error_msg.lower():
+            truncated_prompt = prompt_text[:500]  # 프롬프트 길이 제한
+            try:
+                full_prompt = truncated_prompt + style_prompt
+                with st.spinner(f"'{page['title']}' 이미지 재시도 중..."):
+                    response = client.images.generate(
+                        model="dall-e-3",
+                        prompt=full_prompt,
+                        n=1,
+                        size="1024x1024"
+                    )
+                return {
+                    'prompt': truncated_prompt,
+                    'url': response.data[0].url
+                }
+            except Exception as retry_error:
+                st.error(f"이미지 재생성 오류: {str(retry_error)}")
+        
         return {
             'prompt': prompt_text,
             'url': None
@@ -298,7 +368,10 @@ def main():
             # 설정 옵션
             st.subheader("옵션 설정")
             num_pages = st.slider("생성할 페이지 수", 1, 10, 3, 1)
-            script_length = st.slider("총 스크립트 길이 (자)", 100, 5000, 1500, 100)
+            script_length = st.slider("페이지당 스크립트 길이 (자)", 100, 1000, 300, 50)
+            total_length = script_length * num_pages
+            st.caption(f"총 스크립트 길이: 약 {total_length}자")
+            
             image_style = st.selectbox(
                 "이미지 스타일",
                 ["실사 스타일", "동화책 스타일", "수채화 스타일", "3D 렌더링", "일러스트레이션"]
@@ -320,7 +393,7 @@ def main():
         else:
             process_button = False
             num_pages = 3  # 기본값
-            script_length = 1500  # 기본값
+            script_length = 300  # 기본값
             image_style = "실사 스타일"  # 기본값
             st.info("먼저 PDF 파일을 업로드해주세요.")
             st.markdown("""
@@ -347,7 +420,8 @@ def main():
                 
                 # 선택된 모델로 스크립트 생성
                 selected_model = st.session_state.selected_model
-                raw_script = generate_video_script(text, num_pages, script_length, selected_model)
+                total_script_length = script_length * num_pages
+                raw_script = generate_video_script(text, num_pages, total_script_length, selected_model)
                 if not raw_script or "실패" in raw_script:
                     st.error("블로그 스크립트 생성에 실패했습니다.")
                     return
@@ -355,8 +429,8 @@ def main():
                 # 세션에 원본 스크립트 저장
                 st.session_state.raw_script = raw_script
                 
-                # 스크립트를 페이지별로 파싱
-                pages = parse_script_pages(raw_script)
+                # 스크립트를 페이지별로 파싱 (예상 페이지 수 전달)
+                pages = parse_script_pages(raw_script, num_pages)
                 
                 # 각 페이지에 대한 이미지 프롬프트 생성
                 progress_bar = st.progress(0)
